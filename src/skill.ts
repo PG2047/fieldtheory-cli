@@ -1,7 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { promptText } from './prompt.js';
+
+function sha256(content: string): string {
+  return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+}
 
 // ── Skill content ────────────────────────────────────────────────────────────
 
@@ -141,7 +146,12 @@ export async function installSkill(): Promise<SkillResult[]> {
       }
     }
 
-    fs.writeFileSync(agent.installPath, content, 'utf-8');
+    fs.writeFileSync(agent.installPath, content, { encoding: 'utf-8', mode: 0o644 });
+    process.stderr.write(`  sha256: ${sha256(content)}\n`);
+    const written = fs.readFileSync(agent.installPath, 'utf-8');
+    if (written !== content) {
+      throw new Error(`Integrity check failed: written content does not match expected content at ${agent.installPath}`);
+    }
     results.push({ agent: agent.name, path: agent.installPath, action: exists ? 'updated' : 'installed' });
   }
   return results;
@@ -156,5 +166,41 @@ export function uninstallSkill(): SkillResult[] {
       results.push({ agent: agent.name, path: agent.installPath, action: 'removed' });
     }
   }
+  return results;
+}
+
+export interface SkillVerification {
+  agent: string;
+  path: string;
+  status: 'ok' | 'modified' | 'missing';
+  expectedHash: string;
+  actualHash?: string;
+}
+
+export function verifySkill(): SkillVerification[] {
+  const detected = detectAgents();
+  const results: SkillVerification[] = [];
+
+  for (const agent of detected) {
+    const content = agent.name === 'Codex' ? skillBody() : skillWithFrontmatter();
+    const expectedHash = sha256(content);
+
+    if (!fs.existsSync(agent.installPath)) {
+      results.push({ agent: agent.name, path: agent.installPath, status: 'missing', expectedHash });
+      continue;
+    }
+
+    const actual = fs.readFileSync(agent.installPath, 'utf-8');
+    const actualHash = sha256(actual);
+
+    results.push({
+      agent: agent.name,
+      path: agent.installPath,
+      status: actualHash === expectedHash ? 'ok' : 'modified',
+      expectedHash,
+      actualHash,
+    });
+  }
+
   return results;
 }

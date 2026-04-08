@@ -25,15 +25,25 @@ export interface MdBookmark {
  * Truncate + flatten bookmark text for safe inclusion in prompts.
  */
 export function sanitizeForPrompt(text: string, maxLen = 400): string {
-  return text
-    .replace(/[\r\n]+/g, ' ')                                              // collapse newlines first
-    .replace(/ignore\s+(previous|above|all)\s+instructions?/gi, '[filtered]')
-    .replace(/disregard\s+(previous|above|all)\s+/gi, '[filtered]')
-    .replace(/you\s+are\s+now\s+/gi, '[filtered]')
-    .replace(/system\s*:\s*/gi, '[filtered]')
-    .replace(/<\/?[a-z_-]+>/gi, '')
-    .slice(0, maxLen)
-    .trim();
+  // Step 1: Unicode NFKC normalization
+  let s = text.normalize('NFKC');
+  // Step 2: Collapse whitespace (newlines → spaces)
+  s = s.replace(/[\r\n]+/g, ' ');
+  // Step 3: Strip non-printable characters
+  s = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
+  // Step 4: Expanded injection pattern blocklist
+  s = s.replace(/ignore\s+(previous|above|all|prior|every|these|system)\s+instructions?/gi, '[filtered]');
+  s = s.replace(/disregard\s+(previous|above|all|prior)\s+/gi, '[filtered]');
+  s = s.replace(/you\s+are\s+(now|a|an)\s+/gi, '[filtered]');
+  s = s.replace(/system\s*:\s*/gi, '[filtered]');
+  s = s.replace(/\bact\s+as\s+(a|an|if)\s+/gi, '[filtered]');
+  s = s.replace(/\bpretend\s+(you|to\s+be)\s+/gi, '[filtered]');
+  s = s.replace(/\bdo\s+not\s+classify\b/gi, '[filtered]');
+  s = s.replace(/\breturn\s+(the\s+)?following\s+json\b/gi, '[filtered]');
+  s = s.replace(/\binstead\s*,?\s*(respond|reply|output|return)\b/gi, '[filtered]');
+  // Step 5: Strip all XML/HTML-like tags
+  s = s.replace(/<\/?[a-z_][\w-]*>/gi, '');
+  return s.slice(0, maxLen).trim();
 }
 
 const FRONTMATTER_RULES = `

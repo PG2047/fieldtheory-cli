@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, unlinkSync, copyFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync, copyFileSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir, homedir, platform } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -104,10 +104,17 @@ function queryFirefoxCookies(
     const tmpDb = join(tmpdir(), `ft-ff-cookies-${randomUUID()}.db`);
     try {
       copyFileSync(dbPath, tmpDb);
+      chmodSync(tmpDb, 0o600);
       const walPath = dbPath + '-wal';
       const shmPath = dbPath + '-shm';
-      if (existsSync(walPath)) copyFileSync(walPath, tmpDb + '-wal');
-      if (existsSync(shmPath)) copyFileSync(shmPath, tmpDb + '-shm');
+      if (existsSync(walPath)) {
+        copyFileSync(walPath, tmpDb + '-wal');
+        chmodSync(tmpDb + '-wal', 0o600);
+      }
+      if (existsSync(shmPath)) {
+        copyFileSync(shmPath, tmpDb + '-shm');
+        chmodSync(tmpDb + '-shm', 0o600);
+      }
       output = tryQuery(tmpDb);
     } catch (e2: any) {
       throw new Error(
@@ -117,9 +124,9 @@ function queryFirefoxCookies(
         'If Firefox is open, try closing it and retrying.'
       );
     } finally {
-      try { unlinkSync(tmpDb); } catch {}
-      try { unlinkSync(tmpDb + '-wal'); } catch {}
-      try { unlinkSync(tmpDb + '-shm'); } catch {}
+      try { unlinkSync(tmpDb); } catch { process.stderr.write(`Warning: Could not remove temporary cookie database: ${tmpDb}\n`); }
+      try { unlinkSync(tmpDb + '-wal'); } catch { process.stderr.write(`Warning: Could not remove temporary cookie database: ${tmpDb}-wal\n`); }
+      try { unlinkSync(tmpDb + '-shm'); } catch { process.stderr.write(`Warning: Could not remove temporary cookie database: ${tmpDb}-shm\n`); }
     }
   }
 

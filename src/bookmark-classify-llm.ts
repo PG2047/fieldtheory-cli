@@ -29,12 +29,24 @@ interface LlmClassification {
 // ── Text sanitization ───────────────────────────────────────────────────
 
 function sanitizeBookmarkText(text: string): string {
-  return text
-    .replace(/ignore\s+(previous|above|all)\s+instructions?/gi, '[filtered]')
-    .replace(/you\s+are\s+now\s+/gi, '[filtered]')
-    .replace(/system\s*:\s*/gi, '[filtered]')
-    .replace(/<\/?tweet_text>/gi, '') // prevent tag escape
-    .slice(0, 300);
+  // Step 1: Unicode NFKC normalization — collapses homoglyphs (Cyrillic і→i, etc.)
+  let s = text.normalize('NFKC');
+  // Step 2: Strip non-printable and control characters (keep basic ASCII + common Unicode)
+  s = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
+  // Step 3: Expanded injection pattern blocklist
+  s = s.replace(/ignore\s+(previous|above|all|prior|every|these|system)\s+instructions?/gi, '[filtered]');
+  s = s.replace(/disregard\s+(previous|above|all|prior)\s+/gi, '[filtered]');
+  s = s.replace(/you\s+are\s+(now|a|an)\s+/gi, '[filtered]');
+  s = s.replace(/system\s*:\s*/gi, '[filtered]');
+  s = s.replace(/\bact\s+as\s+(a|an|if)\s+/gi, '[filtered]');
+  s = s.replace(/\bpretend\s+(you|to\s+be)\s+/gi, '[filtered]');
+  s = s.replace(/\bdo\s+not\s+classify\b/gi, '[filtered]');
+  s = s.replace(/\breturn\s+(the\s+)?following\s+json\b/gi, '[filtered]');
+  s = s.replace(/\binstead\s*,?\s*(respond|reply|output|return)\b/gi, '[filtered]');
+  // Step 4: Strip XML/HTML-like tags that could escape the <tweet_text> boundary
+  s = s.replace(/<\/?[a-z_][\w-]*>/gi, '');
+  // Step 5: Truncate
+  return s.slice(0, 300);
 }
 
 // ── Prompt construction ─────────────────────────────────────────────────
@@ -79,9 +91,11 @@ function parseResponse(raw: string, batchIds: Set<string>): LlmClassification[] 
 
   const parsed = JSON.parse(jsonMatch[0]);
   if (!Array.isArray(parsed)) throw new Error('Response is not an array');
+  // Defensive: cap parsed results to batch size to prevent LLM hallucination
+  const capped = parsed.slice(0, batchIds.size);
 
   const results: LlmClassification[] = [];
-  for (const item of parsed) {
+  for (const item of capped) {
     if (!item.id || !batchIds.has(item.id)) continue;
 
     const rawArr = item.categories ?? item.domains ?? [];
