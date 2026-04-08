@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, unlinkSync, copyFileSync, readFileSync } from 'node:fs';
+import { existsSync, unlinkSync, copyFileSync, readFileSync, chmodSync } from 'node:fs';
 import { join, win32 as winPath } from 'node:path';
 import { tmpdir, platform } from 'node:os';
 import { pbkdf2Sync, createDecipheriv, randomUUID } from 'node:crypto';
@@ -361,11 +361,12 @@ function queryDbVersion(dbPath: string): number {
     const tmpDb = join(tmpdir(), `ft-meta-${randomUUID()}.db`);
     try {
       copyFileSync(dbPath, tmpDb);
+      chmodSync(tmpDb, 0o600);
       return parseInt(tryQuery(tmpDb), 10) || 0;
     } catch {
       return 0;
     } finally {
-      try { unlinkSync(tmpDb); } catch {}
+      try { unlinkSync(tmpDb); } catch { process.stderr.write(`Warning: Could not remove temporary cookie database: ${tmpDb}\n`); }
     }
   }
 }
@@ -405,6 +406,7 @@ function queryCookies(dbPath: string, domain: string, names: string[], browser: 
     const tmpDb = join(tmpdir(), `ft-cookies-${randomUUID()}.db`);
     try {
       copyFileSync(dbPath, tmpDb);
+      chmodSync(tmpDb, 0o600);
       output = tryQuery(tmpDb);
     } catch (e2: any) {
       throw new Error(
@@ -415,7 +417,7 @@ function queryCookies(dbPath: string, domain: string, names: string[], browser: 
         'Or pass cookies manually:  ft sync --cookies <ct0> <auth_token>'
       );
     } finally {
-      try { unlinkSync(tmpDb); } catch {}
+      try { unlinkSync(tmpDb); } catch { process.stderr.write(`Warning: Could not remove temporary cookie database: ${tmpDb}\n`); }
     }
   }
 
