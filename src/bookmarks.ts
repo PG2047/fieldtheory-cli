@@ -125,7 +125,7 @@ function normalizeBookmarkPage(page: BookmarkApiResponse, syncedAt: string): Boo
 
 async function fetchBookmarksPage(accessToken: string, userId: string, nextToken?: string): Promise<{ ok: boolean; status: number; detail: string; page?: BookmarkApiResponse; requestUrl: string }> {
   const url = new URL(`https://api.x.com/2/users/${userId}/bookmarks`);
-  url.searchParams.set('max_results', '100');
+  url.searchParams.set("max_results", "10");
   url.searchParams.set('tweet.fields', 'created_at,author_id,entities');
   url.searchParams.set('expansions', 'author_id');
   url.searchParams.set('user.fields', 'username,name');
