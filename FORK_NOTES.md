@@ -8,6 +8,8 @@ self-contained, and intended to be contributed back.
 
 | SHA | Date | Type | Summary |
 |-----|------|------|---------|
+| `feat/oauth-token-refresh`, `pr-oauth-refresh` (branches) | 2026-05-30 | `feat(auth)` | Implement the OAuth2 `refresh_token` grant. ft only did `authorization_code`, so the access token expired after ~2h and every later `ft sync --api` failed with 401; the stored refresh token was never used. Adds proactive refresh-before-expiry, a 401 retry, and atomic persistence of the rotated token. Proposed upstream as [#164](https://github.com/afar1/fieldtheory-cli/pull/164). |
+| (merged upstream) | 2026-05-29 | `fix(auth)` | Point the OAuth2 authorize endpoint at `x.com` instead of `twitter.com` so an existing `x.com` session is recognized. Merged upstream as [#162](https://github.com/afar1/fieldtheory-cli/pull/162). |
 | `4d9c43a` | 2026-05-23 | `fix(deps)` | Regenerate `package-lock.json` to match `package.json`. Upstream renamed `ft-bookmarks 1.3.0` → `fieldtheory 1.3.2`, dropped `zod`, and added a `fieldtheory` bin alias, but the lock file was not regenerated in the same commit. Without this fix, `npm install` silently rewrites the lock on first run. |
 | `25f501f` | 2026-04-08 | `security` | Fix 3 issues from a dual-model audit (Claude Opus 4.6 + GPT-5.4 cross-validation). Full report in [`SECURITY.md`](./SECURITY.md). 19 new tests, 0 regressions. |
 
@@ -29,6 +31,8 @@ PG2047/fieldtheory-cli main HEAD = 4d9c43a
 
 ## Future intent
 
+- [x] Open PR upstream for the `x.com` authorize endpoint fix — merged as #162
+- [ ] Land PR #164 (OAuth2 token refresh) upstream
 - [ ] Open PR upstream for `25f501f` (security fix)
 - [ ] Open PR upstream for `4d9c43a` (lockfile regeneration)
 - [ ] Sync the 46 upstream commits — may require rebase if upstream already addressed `package-lock.json` mismatch independently
