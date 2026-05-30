@@ -1,6 +1,6 @@
 import { ensureDir, pathExists, readJson, readJsonLines, writeJson, writeJsonLines } from './fs.js';
 import { ensureDataDir, twitterBackfillStatePath, twitterBookmarksCachePath, twitterBookmarksMetaPath } from './paths.js';
-import type { BookmarkBackfillState, BookmarkCacheMeta, BookmarkRecord } from './types.js';
+import type { BookmarkBackfillState, BookmarkCacheMeta, BookmarkMediaObject, BookmarkRecord, QuotedTweetSnapshot } from './types.js';
 import { loadXApiConfig } from './config.js';
 import { ensureValidTwitterToken, refreshTwitterTokenNow } from './xauth.js';
 
@@ -12,6 +12,19 @@ export interface BookmarkSyncResult {
   metaPath: string;
 }
 
+type BookmarkApiMedia = {
+  media_key: string;
+  type?: string;
+  url?: string;
+  preview_image_url?: string;
+  width?: number;
+  height?: number;
+  alt_text?: string;
+  variants?: Array<{ url?: string; content_type?: string; bit_rate?: number }>;
+};
+
+type BookmarkApiUser = { id: string; username?: string; name?: string; profile_image_url?: string };
+
 type BookmarkApiTweet = {
   id: string;
   text?: string;
@@ -20,12 +33,24 @@ type BookmarkApiTweet = {
   entities?: {
     urls?: Array<{ expanded_url?: string; url?: string }>;
   };
+  attachments?: { media_keys?: string[] };
+  referenced_tweets?: Array<{ type?: string; id?: string }>;
+  public_metrics?: {
+    retweet_count?: number;
+    reply_count?: number;
+    like_count?: number;
+    quote_count?: number;
+    bookmark_count?: number;
+    impression_count?: number;
+  };
 };
 
 type BookmarkApiResponse = {
   data?: BookmarkApiTweet[];
   includes?: {
-    users?: Array<{ id: string; username?: string; name?: string }>;
+    users?: BookmarkApiUser[];
+    media?: BookmarkApiMedia[];
+    tweets?: BookmarkApiTweet[];
   };
   meta?: {
     next_token?: string;
@@ -41,9 +66,15 @@ function makeBookmark(record: Partial<BookmarkRecord> & Pick<BookmarkRecord, 'id
     text: record.text,
     authorHandle: record.authorHandle,
     authorName: record.authorName,
+    authorProfileImageUrl: record.authorProfileImageUrl,
+    postedAt: record.postedAt,
     bookmarkedAt: record.bookmarkedAt,
     syncedAt: record.syncedAt ?? new Date().toISOString(),
     media: record.media ?? [],
+    mediaObjects: record.mediaObjects,
+    engagement: record.engagement,
+    quotedStatusId: record.quotedStatusId,
+    quotedTweet: record.quotedTweet,
     links: record.links ?? [],
     tags: record.tags ?? [],
   };
@@ -100,26 +131,111 @@ async function fetchCurrentUserId(accessToken: string): Promise<{ ok: boolean; i
   };
 }
 
-function normalizeBookmarkPage(page: BookmarkApiResponse, syncedAt: string): BookmarkRecord[] {
-  const userMap = new Map<string, { username?: string; name?: string }>();
-  for (const user of page.includes?.users ?? []) {
-    userMap.set(String(user.id), { username: user.username, name: user.name });
+function buildBookmarkMedia(
+  tweet: BookmarkApiTweet,
+  mediaMap: Map<string, BookmarkApiMedia>,
+  tweetUrl: string,
+): { media: string[]; mediaObjects: BookmarkMediaObject[] } {
+  const media: string[] = [];
+  const mediaObjects: BookmarkMediaObject[] = [];
+  for (const key of tweet.attachments?.media_keys ?? []) {
+    const m = mediaMap.get(String(key));
+    if (!m) continue;
+    // photos expose `url`; video / animated_gif expose `preview_image_url` (the poster).
+    const poster = m.url || m.preview_image_url;
+    if (!poster) continue;
+    media.push(poster);
+    const variants = Array.isArray(m.variants)
+      ? m.variants
+          .filter((v) => v.url)
+          .map((v) => ({ bitrate: v.bit_rate ?? 0, url: String(v.url) }))
+      : [];
+    // Runtime shape matches the existing GraphQL data and the site renderer
+    // (url / expandedUrl / videoVariants), which differs from the legacy BookmarkMediaObject type.
+    const obj = {
+      type: m.type,
+      url: poster,
+      expandedUrl: tweetUrl,
+      width: m.width,
+      height: m.height,
+      ...(m.alt_text ? { altText: m.alt_text } : {}),
+      ...(variants.length ? { videoVariants: variants } : {}),
+    } as unknown as BookmarkMediaObject;
+    mediaObjects.push(obj);
   }
+  return { media, mediaObjects };
+}
+
+function normalizeBookmarkPage(page: BookmarkApiResponse, syncedAt: string): BookmarkRecord[] {
+  const userMap = new Map<string, BookmarkApiUser>();
+  for (const user of page.includes?.users ?? []) userMap.set(String(user.id), user);
+  const mediaMap = new Map<string, BookmarkApiMedia>();
+  for (const m of page.includes?.media ?? []) mediaMap.set(String(m.media_key), m);
+  const tweetMap = new Map<string, BookmarkApiTweet>();
+  for (const t of page.includes?.tweets ?? []) tweetMap.set(String(t.id), t);
+
+  const tweetUrl = (tweet: BookmarkApiTweet): string => {
+    const handle = tweet.author_id ? userMap.get(String(tweet.author_id))?.username : undefined;
+    return `https://x.com/${handle ?? 'i'}/status/${String(tweet.id)}`;
+  };
 
   return (page.data ?? []).map((tweet) => {
     const user = tweet.author_id ? userMap.get(String(tweet.author_id)) : undefined;
     const tweetId = String(tweet.id);
+    const url = tweetUrl(tweet);
+    const { media, mediaObjects } = buildBookmarkMedia(tweet, mediaMap, url);
+
+    const pm = tweet.public_metrics;
+    const engagement = pm
+      ? {
+          likeCount: pm.like_count,
+          repostCount: pm.retweet_count,
+          replyCount: pm.reply_count,
+          quoteCount: pm.quote_count,
+          bookmarkCount: pm.bookmark_count,
+          viewCount: pm.impression_count,
+        }
+      : undefined;
+
+    const quotedRef = (tweet.referenced_tweets ?? []).find((r) => r.type === 'quoted');
+    let quotedTweet: QuotedTweetSnapshot | undefined;
+    if (quotedRef?.id) {
+      const qt = tweetMap.get(String(quotedRef.id));
+      if (qt) {
+        const qUser = qt.author_id ? userMap.get(String(qt.author_id)) : undefined;
+        const qUrl = tweetUrl(qt);
+        const qMedia = buildBookmarkMedia(qt, mediaMap, qUrl);
+        quotedTweet = {
+          id: String(qt.id),
+          text: qt.text ?? '',
+          authorHandle: qUser?.username,
+          authorName: qUser?.name,
+          authorProfileImageUrl: qUser?.profile_image_url,
+          postedAt: qt.created_at,
+          media: qMedia.media,
+          mediaObjects: qMedia.mediaObjects,
+          url: qUrl,
+        };
+      }
+    }
+
     return makeBookmark({
       id: tweetId,
       tweetId,
-      url: `https://x.com/${user?.username ?? 'i'}/status/${tweetId}`,
+      url,
       text: tweet.text ?? '',
       authorHandle: user?.username,
       authorName: user?.name,
+      authorProfileImageUrl: user?.profile_image_url,
       // X API created_at is the tweet post time, not the bookmark time; store it as postedAt.
       postedAt: tweet.created_at,
       syncedAt,
       links: (tweet.entities?.urls ?? []).map((u) => u.expanded_url ?? u.url ?? '').filter(Boolean),
+      media,
+      mediaObjects,
+      engagement,
+      quotedStatusId: quotedRef?.id ? String(quotedRef.id) : undefined,
+      quotedTweet,
     });
   });
 }
@@ -127,9 +243,10 @@ function normalizeBookmarkPage(page: BookmarkApiResponse, syncedAt: string): Boo
 async function fetchBookmarksPage(accessToken: string, userId: string, nextToken?: string): Promise<{ ok: boolean; status: number; detail: string; page?: BookmarkApiResponse; requestUrl: string }> {
   const url = new URL(`https://api.x.com/2/users/${userId}/bookmarks`);
   url.searchParams.set("max_results", "10");
-  url.searchParams.set('tweet.fields', 'created_at,author_id,entities');
-  url.searchParams.set('expansions', 'author_id');
-  url.searchParams.set('user.fields', 'username,name');
+  url.searchParams.set('tweet.fields', 'created_at,author_id,entities,attachments,referenced_tweets,public_metrics');
+  url.searchParams.set('expansions', 'author_id,attachments.media_keys,referenced_tweets.id,referenced_tweets.id.author_id,referenced_tweets.id.attachments.media_keys');
+  url.searchParams.set('media.fields', 'url,preview_image_url,type,variants,width,height,alt_text');
+  url.searchParams.set('user.fields', 'username,name,profile_image_url');
   if (nextToken) url.searchParams.set('pagination_token', nextToken);
 
   const result = await fetchJsonWithUserToken(url.toString(), accessToken);
