@@ -2,7 +2,7 @@ import { ensureDir, pathExists, readJson, readJsonLines, writeJson, writeJsonLin
 import { ensureDataDir, twitterBackfillStatePath, twitterBookmarksCachePath, twitterBookmarksMetaPath } from './paths.js';
 import type { BookmarkBackfillState, BookmarkCacheMeta, BookmarkRecord } from './types.js';
 import { loadXApiConfig } from './config.js';
-import { loadTwitterOAuthToken } from './xauth.js';
+import { ensureValidTwitterToken, refreshTwitterTokenNow } from './xauth.js';
 
 export interface BookmarkSyncResult {
   mode: 'full' | 'incremental';
@@ -116,7 +116,8 @@ function normalizeBookmarkPage(page: BookmarkApiResponse, syncedAt: string): Boo
       text: tweet.text ?? '',
       authorHandle: user?.username,
       authorName: user?.name,
-      bookmarkedAt: tweet.created_at,
+      // X API created_at is the tweet post time, not the bookmark time; store it as postedAt.
+      postedAt: tweet.created_at,
       syncedAt,
       links: (tweet.entities?.urls ?? []).map((u) => u.expanded_url ?? u.url ?? '').filter(Boolean),
     });
@@ -154,12 +155,21 @@ export async function syncTwitterBookmarks(
   mode: 'full' | 'incremental',
   options: { targetAdds?: number } = {}
 ): Promise<BookmarkSyncResult> {
-  const token = await loadTwitterOAuthToken();
+  const token = await ensureValidTwitterToken();
   if (!token?.access_token) {
     throw new Error('Missing user-context OAuth token. Run: ft auth');
   }
 
-  const me = await fetchCurrentUserId(token.access_token);
+  let accessToken = token.access_token;
+  let me = await fetchCurrentUserId(accessToken);
+  if (!me.ok && me.status === 401) {
+    // Access token may have been revoked or expired ahead of its stated lifetime; refresh once and retry.
+    const refreshed = await refreshTwitterTokenNow();
+    if (refreshed?.access_token) {
+      accessToken = refreshed.access_token;
+      me = await fetchCurrentUserId(accessToken);
+    }
+  }
   if (!me.ok || !me.id) {
     throw new Error(`Could not resolve current user id: ${me.detail}`);
   }
@@ -177,7 +187,7 @@ export async function syncTwitterBookmarks(
   const maxPages = mode === 'full' ? 20 : 2;
 
   while (pages < maxPages) {
-    const pageResult = await fetchBookmarksPage(token.access_token, me.id, nextToken);
+    const pageResult = await fetchBookmarksPage(accessToken, me.id, nextToken);
     if (!pageResult.ok || !pageResult.page) {
       throw new Error(`Bookmark fetch failed (${pageResult.status}): ${pageResult.detail}`);
     }
