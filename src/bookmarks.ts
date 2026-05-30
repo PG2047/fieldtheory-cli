@@ -184,7 +184,7 @@ export async function syncTwitterBookmarks(
   const allFetched: BookmarkRecord[] = [];
   let nextToken: string | undefined;
   let pages = 0;
-  const maxPages = mode === 'full' ? 20 : 2;
+  const maxPages = mode === 'full' ? 20 : 5;
 
   while (pages < maxPages) {
     const pageResult = await fetchBookmarksPage(accessToken, me.id, nextToken);
